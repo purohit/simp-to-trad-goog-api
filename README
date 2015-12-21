@@ -1,0 +1,11 @@
+I wrote this program to translate 8,000+ Anki simplified Chinese
+sentences to traditional ones using the Google Translate API.
+
+It cost me about one dollar to translate approximately 100,000 characters.
+
+I've found that the Google Translate API is accurate for Chinese Simplified <-> Traditional, so I hope there aren't any systemic problems.
+
+You can find my enhanced version, with fields for both simplified and traditional characters,
+here: TODO.
+
+You can find the original deck here; many thanks to the original compiler: https://ankiweb.net/shared/info/2003820603
