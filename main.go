@@ -35,16 +35,16 @@ const (
 // Data comes from this nested JSON structure:
 //{"data": {"translations": [{"translatedText": "你覺得緊張嗎？"]}}}
 
-type ttJSON struct {
-	Text string `json:"translatedText"`
+type respJSON struct {
+	Data tJSON `json:"data"`
 }
 
 type tJSON struct {
 	Translations []ttJSON `json:"translations"`
 }
 
-type respJSON struct {
-	Data tJSON `json:"data"`
+type ttJSON struct {
+	Text string `json:"translatedText"`
 }
 
 type sourceText struct {
@@ -83,27 +83,32 @@ func translate(s sourceText, apiKey string) (r result) {
 	return
 }
 
-func main() {
+func startWorkers(from <-chan sourceText, to chan result, wg *sync.WaitGroup) {
 	apiKey := os.Getenv(apiKeyEnvVar)
 	if apiKey == "" {
 		log.Fatalf("No %s supplied", apiKeyEnvVar)
 	}
-	total := make(chan int)
-	toTranslate := make(chan sourceText)
-	translated := make(chan result)
 	limiter := rate.NewLimiter(maxRequestsPerSec, 1)
-	var wg sync.WaitGroup
 	for i := 0; i < jobs; i++ { // Start workers
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for t := range toTranslate {
+			for f := range from {
 				// Throttle & perform request.
 				limiter.Wait(context.TODO())
-				translated <- translate(t, apiKey)
+				to <- translate(f, apiKey)
 			}
 		}()
 	}
+
+}
+
+func main() {
+	total := make(chan int)
+	toTranslate := make(chan sourceText)
+	translated := make(chan result)
+	var wg sync.WaitGroup
+	startWorkers(toTranslate, translated, &wg)
 	var results byLine
 	wg.Add(1)
 	// Collect results as they arrive
