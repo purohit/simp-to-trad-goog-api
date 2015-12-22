@@ -3,8 +3,6 @@
 // Chinese using the Google Translate API.
 // Outputs the strings to stdout at the end, in order.
 // Your API key needs to be set as an environment var.
-// Uses request limiting (100/s as specified by Google),
-// and 20 concurrent network requests.
 
 package main
 
@@ -29,16 +27,13 @@ const (
 
 	from = "zh-CN"
 	to   = "zh-TW"
+
+	maxRequestsPerSec = 100 // 100/s is the maximum rate limit, specified by Google
+	jobs              = 20  // 20 concurrent network requests.
 )
 
 // Data comes from this nested JSON structure:
-//{
-//"data": {
-//  "translations": [{
-//    "translatedText": "你覺得緊張嗎？"
-//  ]}
-//  }
-//}
+//{"data": {"translations": [{"translatedText": "你覺得緊張嗎？"]}}}
 
 type ttJSON struct {
 	Text string `json:"translatedText"`
@@ -48,7 +43,7 @@ type tJSON struct {
 	Translations []ttJSON `json:"translations"`
 }
 
-type dJSON struct {
+type respJSON struct {
 	Data tJSON `json:"data"`
 }
 
@@ -57,36 +52,35 @@ type sourceText struct {
 	text string
 }
 
-type doneText struct {
+type result struct {
 	line int
 	text string
 	err  error
 }
 
-type byLine []doneText
+type byLine []result
 
 func (a byLine) Len() int           { return len(a) }
 func (a byLine) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a byLine) Less(i, j int) bool { return a[i].line < a[j].line }
 
-func translate(s sourceText, key string) doneText {
-	res := doneText{line: s.line}
-	resp, err := http.Get(fmt.Sprintf("%s?q=%s&target=%s&source=%s&key=%s", baseURL, url.QueryEscape(s.text), to, from, key))
+func translate(s sourceText, apiKey string) (r result) {
+	r.line = s.line
+	resp, err := http.Get(fmt.Sprintf("%s?q=%s&target=%s&source=%s&key=%s", baseURL, url.QueryEscape(s.text), to, from, apiKey))
 	defer resp.Body.Close()
 	if err != nil {
-		res.err = err
-		return res
+		r.err = err
+		return
 	}
-	// Let's parse it.
+	// Parse it.
 	dec := json.NewDecoder(resp.Body)
-	var d dJSON
-	if err := dec.Decode(&d); err != nil {
-		res.err = err
-		return res
+	var j respJSON
+	if r.err = dec.Decode(&j); r.err != nil {
+		return
 	}
 	// Got some translated text.
-	res.text = d.Data.Translations[0].Text
-	return res
+	r.text = j.Data.Translations[0].Text
+	return
 }
 
 func main() {
@@ -96,10 +90,10 @@ func main() {
 	}
 	total := make(chan int)
 	toTranslate := make(chan sourceText)
-	translated := make(chan doneText)
-	limiter := rate.NewLimiter(100, 1)
+	translated := make(chan result)
+	limiter := rate.NewLimiter(maxRequestsPerSec, 1)
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ { // Start workers
+	for i := 0; i < jobs; i++ { // Start workers
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -110,38 +104,39 @@ func main() {
 			}
 		}()
 	}
-	var allResults byLine
+	var results byLine
 	wg.Add(1)
-	go func() { // Put results into a slice as they arrive
+	// Collect results as they arrive
+	go func() {
 		defer wg.Done()
-		j := -1
+		expected := -1
 		for {
 			select {
 			case r := <-translated:
-				allResults = append(allResults, r)
-				if len(allResults) == j {
+				results = append(results, r)
+				if len(results) == expected {
 					return
 				}
-			case t := <-total:
-				j = t
+			case expected = <-total:
+				if len(results) == expected {
+					return
+				}
 			}
 		}
 	}()
+	// Read input and enqueue jobs
 	i := 0
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		if i > 10 {
-			break
-		}
 		toTranslate <- sourceText{line: i, text: scanner.Text()}
 		i++
 	}
 	close(toTranslate)
 	total <- i
 	wg.Wait()
-	// We can sort and print all the jobs now since we're guaranteed they're all done.
-	sort.Sort(allResults)
-	for _, r := range allResults {
+	// Sort and print all results
+	sort.Sort(results)
+	for _, r := range results {
 		fmt.Println(r.text)
 	}
 }
